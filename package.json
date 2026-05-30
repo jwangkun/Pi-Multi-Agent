@@ -1,0 +1,110 @@
+{
+  "name": "pi-multi-agent",
+  "version": "1.0.0",
+  "description": "Production-grade Multi-Agent Framework — 6 collaboration patterns, 6 communication structures, LLM-powered deep planning, agent cluster execution, and real-time tool calling",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.mjs",
+      "require": "./dist/core.js"
+    },
+    "./orchestration": {
+      "types": "./dist/orchestration.d.ts",
+      "import": "./dist/orchestration.mjs",
+      "require": "./dist/orchestration.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.mjs",
+      "require": "./dist/memory.js"
+    },
+    "./collaboration": {
+      "types": "./dist/collaboration.d.ts",
+      "import": "./dist/collaboration.mjs",
+      "require": "./dist/collaboration.js"
+    },
+    "./communication": {
+      "types": "./dist/communication.d.ts",
+      "import": "./dist/communication.mjs",
+      "require": "./dist/communication.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
+    "clean": "rm -rf dist",
+    "server": "npx tsx server/index.ts",
+    "example:research": "npx tsx examples/deep-research.ts",
+    "example:collaboration": "npx tsx examples/collaboration-modes.ts"
+  },
+  "keywords": [
+    "multi-agent",
+    "agent",
+    "ai",
+    "orchestration",
+    "collaboration",
+    "agentic",
+    "llm",
+    "deepseek",
+    "openai",
+    "tool-calling",
+    "function-calling",
+    "agent-cluster",
+    "task-planning",
+    "sequential",
+    "parallel",
+    "debate",
+    "expert-team",
+    "critic-reviewer",
+    "hierarchical",
+    "websocket",
+    "real-time"
+  ],
+  "author": "Pi Multi-Agent Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pi-multi-agent/pi-multi-agent"
+  },
+  "homepage": "https://github.com/pi-multi-agent/pi-multi-agent#readme",
+  "bugs": {
+    "url": "https://github.com/pi-multi-agent/pi-multi-agent/issues"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.11.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "eslint": "^8.56.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "openai": "^6.39.1",
+    "uuid": "^14.0.0",
+    "ws": "^8.21.0"
+  }
+}
