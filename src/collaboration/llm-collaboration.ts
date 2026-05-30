@@ -123,17 +123,26 @@ export class LLMAgentCollaboration {
       };
     });
 
-    const totalTokens = results.reduce((sum, r) => sum + r.tokensUsed, 0);
-    const combinedOutput = results
+    let totalTokens = results.reduce((sum, r) => sum + r.tokensUsed, 0);
+    const combinedRaw = results
       .filter((r) => r.success)
-      .map((r) => `### ${r.agentName}\n${r.output}`)
-      .join('\n\n---\n\n');
+      .map((r) => r.output)
+      .join('\n\n');
+
+    const synthesisPrompt = `Synthesize the following parallel research outputs into a single coherent, well-structured report. Remove redundancy, organize by theme, and produce a clean final deliverable:\n\n${combinedRaw}`;
+    const synthesisResult = await this.callAgent(
+      { id: 'synthesizer', name: 'Synthesizer', type: 'synthesizer', systemPrompt: 'You are a professional report synthesizer. Combine multiple perspectives into one cohesive, well-structured final output without any meta-commentary or process notes.' },
+      synthesisPrompt,
+      4096
+    );
+    results.push(synthesisResult);
+    totalTokens += synthesisResult.tokensUsed;
 
     return {
       success: results.every((r) => r.success),
       mode: 'parallel',
       agentResults: results,
-      finalOutput: combinedOutput,
+      finalOutput: synthesisResult.output,
       totalTokens,
       totalExecutionTime: Date.now() - startTime,
       iterations: 1,

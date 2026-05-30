@@ -1,10 +1,27 @@
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const envPath = path.resolve(__dirname, '..', '.env');
+try {
+  const envContent = readFileSync(envPath, 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    const value = trimmed.slice(eqIndex + 1).trim();
+    process.env[key] = value;
+  }
+} catch {}
+
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 import {
   Agent,
@@ -23,6 +40,8 @@ import {
 import { DeepPlanner, DeepPlan, SubTask } from '../src/orchestration/deep-planner.js';
 import { AgentCluster, ClusterEvent, ClusterExecutionResult, AgentClusterProgress } from '../src/orchestration/agent-cluster.js';
 import { LLMAgentCollaboration } from '../src/collaboration/llm-collaboration.js';
+import { DynamicWorkflow } from '../src/workflow/index.js';
+import type { WorkflowEvent, WorkflowResult } from '../src/workflow/types.js';
 
 const app = express();
 app.use(cors());
@@ -49,6 +68,8 @@ interface ActiveSession {
   cluster?: AgentCluster;
   currentPlan?: DeepPlan;
   executionResult?: ClusterExecutionResult;
+  workflow?: DynamicWorkflow;
+  workflowResult?: WorkflowResult;
 }
 
 const sessions = new Map<string, ActiveSession>();
@@ -1003,6 +1024,183 @@ app.post('/api/sessions/:sessionId/collaborate', async (req, res) => {
   }
 });
 
+app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const { task, tokenBudget, maxConcurrentAgents, args } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'task is required' });
+    return;
+  }
+
+  try {
+    const workflow = new DynamicWorkflow({
+      apiKey: DEEPSEEK_API_KEY,
+      tokenBudget: tokenBudget || 200000,
+      maxConcurrentAgents: maxConcurrentAgents || 5,
+    });
+    session.workflow = workflow;
+
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_started',
+        task,
+      }));
+    }
+
+    workflow.onEvent((event: WorkflowEvent) => {
+      if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+        session.ws.send(JSON.stringify({
+          type: 'workflow_event',
+          eventType: event.type,
+          data: event,
+          timestamp: event.timestamp,
+        }));
+      }
+    });
+
+    const result = await workflow.run(task, args);
+    session.workflowResult = result;
+
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_completed',
+        result: {
+          success: result.success,
+          totalTokens: result.totalTokens,
+          totalExecutionTime: result.totalExecutionTime,
+          snapshot: result.snapshot,
+        },
+      }));
+    }
+
+    res.json({
+      success: result.success,
+      output: result.output,
+      totalTokens: result.totalTokens,
+      totalExecutionTime: result.totalExecutionTime,
+      snapshot: result.snapshot,
+    });
+  } catch (error: any) {
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_error',
+        error: error.message,
+      }));
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/sessions/:sessionId/workflow-run-script', async (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const { script, args } = req.body;
+  if (!script) {
+    res.status(400).json({ error: 'script is required' });
+    return;
+  }
+
+  try {
+    const workflow = session.workflow || new DynamicWorkflow({
+      apiKey: DEEPSEEK_API_KEY,
+      tokenBudget: 200000,
+      maxConcurrentAgents: 5,
+    });
+    session.workflow = workflow;
+
+    const validation = await workflow.validateScript(script);
+    if (!validation.valid) {
+      res.status(400).json({ error: `Invalid script: ${validation.error}` });
+      return;
+    }
+
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_started',
+        task: validation.meta?.name || 'custom_script',
+      }));
+    }
+
+    workflow.onEvent((event: WorkflowEvent) => {
+      if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+        session.ws.send(JSON.stringify({
+          type: 'workflow_event',
+          eventType: event.type,
+          data: event,
+          timestamp: event.timestamp,
+        }));
+      }
+    });
+
+    const result = await workflow.executeScript(script, args);
+    session.workflowResult = result;
+
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_completed',
+        result: {
+          success: result.success,
+          totalTokens: result.totalTokens,
+          totalExecutionTime: result.totalExecutionTime,
+          snapshot: result.snapshot,
+        },
+      }));
+    }
+
+    res.json({
+      success: result.success,
+      output: result.output,
+      totalTokens: result.totalTokens,
+      totalExecutionTime: result.totalExecutionTime,
+      snapshot: result.snapshot,
+      meta: validation.meta,
+    });
+  } catch (error: any) {
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'workflow_error',
+        error: error.message,
+      }));
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/sessions/:sessionId/workflow-result', (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  if (!session.workflowResult) {
+    res.json({ hasResult: false });
+    return;
+  }
+
+  const result = session.workflowResult;
+  res.json({
+    hasResult: true,
+    success: result.success,
+    output: result.output,
+    totalTokens: result.totalTokens,
+    totalExecutionTime: result.totalExecutionTime,
+    snapshot: result.snapshot,
+  });
+});
+
 server.listen(PORT, () => {
   console.log(`\n🚀 Pi Multi-Agent Server running on http://localhost:${PORT}`);
   console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}/ws`);
@@ -1017,5 +1215,8 @@ server.listen(PORT, () => {
   console.log(`  POST   /api/sessions/:id/execute             - Execute task (simple)`);
   console.log(`  GET    /api/sessions/:id/agents              - List agents`);
   console.log(`  GET    /api/agent-templates                  - List templates`);
+  console.log(`  POST   /api/sessions/:id/workflow-execute     - Dynamic workflow (auto-generate script)`);
+  console.log(`  POST   /api/sessions/:id/workflow-run-script  - Dynamic workflow (custom script)`);
+  console.log(`  GET    /api/sessions/:id/workflow-result      - Get workflow result`);
   console.log(``);
 });

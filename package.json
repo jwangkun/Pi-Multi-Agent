@@ -35,6 +35,11 @@
       "types": "./dist/communication.d.ts",
       "import": "./dist/communication.mjs",
       "require": "./dist/communication.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow.d.ts",
+      "import": "./dist/workflow.mjs",
+      "require": "./dist/workflow.js"
     }
   },
   "scripts": {
@@ -48,7 +53,8 @@
     "clean": "rm -rf dist",
     "server": "npx tsx server/index.ts",
     "example:research": "npx tsx examples/deep-research.ts",
-    "example:collaboration": "npx tsx examples/collaboration-modes.ts"
+    "example:collaboration": "npx tsx examples/collaboration-modes.ts",
+    "example:workflow": "npx tsx examples/dynamic-workflow.ts"
   },
   "keywords": [
     "multi-agent",

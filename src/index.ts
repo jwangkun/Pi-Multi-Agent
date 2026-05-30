@@ -57,3 +57,11 @@ export {
 } from './communication/structures.js';
 
 export { CollaborationPattern, CommunicationStructure } from './core/types.js';
+
+export { DynamicWorkflow } from './workflow/workflow.js';
+export type { WorkflowConfig, WorkflowResult, WorkflowEvent, WorkflowEventCallback, WorkflowMeta, WorkflowPhase, WorkflowSnapshot, WorkflowStatus, AgentSnapshot, AgentStatus, AgentOpts } from './workflow/types.js';
+export { TokenBudget } from './workflow/budget.js';
+export { validateAgainstSchema, parseStructuredOutput } from './workflow/structured-output.js';
+export type { JSONSchema, ValidationResult, ValidationError } from './workflow/structured-output.js';
+export { extractMeta, runWorkflowScript, renderSnapshot } from './workflow/runtime.js';
+export { parallel, pipeline } from './workflow/pipeline.js';

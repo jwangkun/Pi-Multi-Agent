@@ -8,6 +8,7 @@ export default defineConfig({
     memory: 'src/memory/index.ts',
     collaboration: 'src/collaboration/index.ts',
     communication: 'src/communication/index.ts',
+    workflow: 'src/workflow/index.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,
