@@ -21,6 +21,9 @@ server/public/404.html
 server/public/_not-found.html
 server/public/*.txt
 
+# Local runtime data
+.pi-multi-agent/
+
 # IDE
 .vscode/
 .idea/

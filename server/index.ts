@@ -48,6 +48,13 @@ import { AgentCluster, ClusterEvent, ClusterExecutionResult, AgentClusterProgres
 import { LLMAgentCollaboration } from '../src/collaboration/llm-collaboration.js';
 import { DynamicWorkflow } from '../src/workflow/index.js';
 import type { WorkflowEvent, WorkflowResult } from '../src/workflow/types.js';
+import {
+  FileSessionStore,
+  getDefaultSessionDataDir,
+  type PersistedSessionPlan,
+  type PersistedSessionResult,
+  type PersistedWorkflowResult,
+} from './session-store.js';
 
 const app = express();
 app.use(cors());
@@ -79,6 +86,85 @@ interface ActiveSession {
 }
 
 const sessions = new Map<string, ActiveSession>();
+const sessionStore = new FileSessionStore(getDefaultSessionDataDir());
+const RUNNING_SESSION_TIMEOUT_MS = Number(process.env.PI_MULTI_AGENT_RUNNING_SESSION_TIMEOUT_MS || 10 * 60 * 1000);
+const STALE_RUNNING_SESSION_ERROR = 'Execution timed out without progress';
+
+function toPersistedPlan(plan: DeepPlan): PersistedSessionPlan {
+  return {
+    id: plan.id,
+    goal: plan.goal,
+    subTaskCount: plan.subTasks.length,
+    collaborationMode: plan.collaborationMode,
+    communicationStructure: plan.communicationStructure,
+    executionStrategy: plan.executionStrategy,
+    subTasks: plan.subTasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      assignedAgentName: task.assignedAgentName,
+      assignedAgentType: task.assignedAgentType,
+      assignedAgentPrompt: task.assignedAgentPrompt,
+      dependencies: task.dependencies,
+      priority: task.priority,
+      tools: task.tools,
+      expectedOutput: task.expectedOutput,
+    })),
+    successCriteria: plan.successCriteria,
+    qualityThresholds: plan.qualityThresholds,
+  };
+}
+
+function toPersistedClusterResult(result: ClusterExecutionResult): PersistedSessionResult {
+  return {
+    success: result.success,
+    finalOutput: result.finalOutput,
+    totalExecutionTime: result.totalExecutionTime,
+    totalTokensUsed: result.totalTokensUsed,
+    evaluationScore: result.evaluationScore,
+    iterations: result.iterations,
+    progress: result.progress.map((item) => ({
+      taskId: item.taskId,
+      status: item.status,
+      progress: item.progress,
+      outputLength: item.outputLength,
+      error: item.error,
+    })),
+  };
+}
+
+function toPersistedWorkflowResult(result: WorkflowResult): PersistedWorkflowResult {
+  return {
+    success: result.success,
+    output: result.output,
+    totalTokens: result.totalTokens,
+    totalExecutionTime: result.totalExecutionTime,
+    snapshot: result.snapshot,
+  };
+}
+
+async function markPersistedSessionFailed(sessionId: string, error: unknown): Promise<void> {
+  try {
+    await sessionStore.patchSession(sessionId, {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } catch {
+    // Avoid hiding the original API error behind a persistence failure.
+  }
+}
+
+async function expireStaleRunningSessions(): Promise<void> {
+  await sessionStore.expireStaleRunningSessions({
+    timeoutMs: RUNNING_SESSION_TIMEOUT_MS,
+    error: STALE_RUNNING_SESSION_ERROR,
+  });
+}
+
+function isExecutionActive(sessionId: string): boolean {
+  const persisted = sessionStore.getSession(sessionId);
+  return Boolean(sessions.has(sessionId) && persisted?.status === 'running');
+}
 
 function createDeepSeekExecutor(sessionId: string): AgentExecutor {
   return {
@@ -198,8 +284,14 @@ const AGENT_TEMPLATES: Record<
   },
 };
 
-app.post('/api/sessions', (_req, res) => {
+app.get('/api/sessions', async (_req, res) => {
+  await expireStaleRunningSessions();
+  res.json({ sessions: sessionStore.listSessions() });
+});
+
+app.post('/api/sessions', async (_req, res) => {
   const sessionId = uuidv4();
+  const now = Date.now();
   const session: ActiveSession = {
     id: sessionId,
     agents: new Map(),
@@ -207,7 +299,35 @@ app.post('/api/sessions', (_req, res) => {
     sharedMemory: new SharedMemory(),
   };
   sessions.set(sessionId, session);
+  await sessionStore.saveSession({
+    id: sessionId,
+    createdAt: now,
+    updatedAt: now,
+    status: 'idle',
+  });
   res.json({ sessionId, message: 'Session created' });
+});
+
+app.get('/api/sessions/:sessionId', async (req, res) => {
+  await expireStaleRunningSessions();
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+  const persisted = sessionStore.getSession(sessionId);
+
+  if (!session && !persisted) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  res.json({
+    session: persisted || {
+      id: sessionId,
+      status: 'idle',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    active: isExecutionActive(sessionId),
+  });
 });
 
 app.post('/api/analyze-complexity', async (req, res) => {
@@ -567,6 +687,12 @@ app.post('/api/sessions/:sessionId/deep-plan', async (req, res) => {
     });
 
     session.currentPlan = plan;
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode: 'deep',
+      task,
+      plan: toPersistedPlan(plan),
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
@@ -625,6 +751,7 @@ app.post('/api/sessions/:sessionId/deep-plan', async (req, res) => {
         error: error.message,
       }));
     }
+    await markPersistedSessionFailed(sessionId, error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -644,6 +771,13 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
   }
 
   try {
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode: 'deep',
+      task,
+      error: undefined,
+    });
+
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
         type: 'cluster_execution_started',
@@ -659,6 +793,12 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
     });
 
     session.currentPlan = plan;
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode: 'deep',
+      task,
+      plan: toPersistedPlan(plan),
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
@@ -685,6 +825,7 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
     session.cluster = cluster;
 
     cluster.onEvent((event: ClusterEvent) => {
+      void sessionStore.patchSession(sessionId, { status: 'running' }).catch(() => {});
       if (session.ws && session.ws.readyState === WebSocket.OPEN) {
         session.ws.send(JSON.stringify({
           type: 'cluster_event',
@@ -699,6 +840,14 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
 
     const result = await cluster.executePlan(plan, maxIterations || 3);
     session.executionResult = result;
+    await sessionStore.patchSession(sessionId, {
+      status: result.success ? 'completed' : 'failed',
+      mode: 'deep',
+      task,
+      plan: toPersistedPlan(plan),
+      result: toPersistedClusterResult(result),
+      error: result.success ? undefined : 'Cluster execution failed',
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
@@ -730,14 +879,21 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
         error: error.message,
       }));
     }
+    await markPersistedSessionFailed(sessionId, error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/sessions/:sessionId/cluster-progress', (req, res) => {
+app.get('/api/sessions/:sessionId/cluster-progress', async (req, res) => {
+  await expireStaleRunningSessions();
   const { sessionId } = req.params;
   const session = sessions.get(sessionId);
+  const persisted = sessionStore.getSession(sessionId);
   if (!session) {
+    if (persisted?.result?.progress) {
+      res.json({ progress: persisted.result.progress });
+      return;
+    }
     res.status(404).json({ error: 'Session not found' });
     return;
   }
@@ -746,14 +902,17 @@ app.get('/api/sessions/:sessionId/cluster-progress', (req, res) => {
   res.json({ progress });
 });
 
-app.get('/api/sessions/:sessionId/result', (req, res) => {
+app.get('/api/sessions/:sessionId/result', async (req, res) => {
+  await expireStaleRunningSessions();
   const { sessionId } = req.params;
   const session = sessions.get(sessionId);
-  if (!session) {
+  const persisted = sessionStore.getSession(sessionId);
+  if (!session && !persisted) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
 
+  const persistedResult = persisted?.result;
   res.json({
     result: session.executionResult ? {
       success: session.executionResult.success,
@@ -763,7 +922,16 @@ app.get('/api/sessions/:sessionId/result', (req, res) => {
       evaluationScore: session.executionResult.evaluationScore,
       iterations: session.executionResult.iterations,
       progress: session.executionResult.progress,
+    } : persistedResult ? {
+      success: persistedResult.success,
+      finalOutput: persistedResult.finalOutput,
+      totalExecutionTime: persistedResult.totalExecutionTime,
+      totalTokensUsed: persistedResult.totalTokensUsed,
+      evaluationScore: persistedResult.evaluationScore,
+      iterations: persistedResult.iterations,
+      progress: persistedResult.progress,
     } : null,
+    session: persisted || null,
   });
 });
 
@@ -962,6 +1130,13 @@ app.post('/api/sessions/:sessionId/collaborate', async (req, res) => {
   }
 
   try {
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode,
+      task,
+      error: undefined,
+    });
+
     const collaboration = new LLMAgentCollaboration(DEEPSEEK_API_KEY);
     const agents = (agentSpecs || []).map((a: any, i: number) => ({
       id: a.id || `agent_${i}`,
@@ -1023,9 +1198,26 @@ app.post('/api/sessions/:sessionId/collaborate', async (req, res) => {
       }));
     }
 
+    await sessionStore.patchSession(sessionId, {
+      status: result.success ? 'completed' : 'failed',
+      mode,
+      task,
+      result: {
+        success: result.success,
+        finalOutput: result.finalOutput || '',
+        totalExecutionTime: result.totalExecutionTime || 0,
+        totalTokensUsed: result.totalTokens || 0,
+        evaluationScore: 0,
+        iterations: result.iterations || 1,
+        progress: [],
+      },
+      error: result.success ? undefined : 'Collaboration failed',
+    });
+
     res.json(result);
   } catch (error: any) {
     console.error(`Collaboration error (${mode}):`, error.message);
+    await markPersistedSessionFailed(sessionId, error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
@@ -1045,6 +1237,13 @@ app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
   }
 
   try {
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode: 'workflow',
+      task,
+      error: undefined,
+    });
+
     const workflow = new DynamicWorkflow({
       apiKey: DEEPSEEK_API_KEY,
       tokenBudget: tokenBudget || 200000,
@@ -1060,6 +1259,7 @@ app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
     }
 
     workflow.onEvent((event: WorkflowEvent) => {
+      void sessionStore.patchSession(sessionId, { status: 'running' }).catch(() => {});
       if (session.ws && session.ws.readyState === WebSocket.OPEN) {
         session.ws.send(JSON.stringify({
           type: 'workflow_event',
@@ -1072,6 +1272,13 @@ app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
 
     const result = await workflow.run(task, args);
     session.workflowResult = result;
+    await sessionStore.patchSession(sessionId, {
+      status: result.success ? 'completed' : 'failed',
+      mode: 'workflow',
+      task,
+      workflowResult: toPersistedWorkflowResult(result),
+      error: result.success ? undefined : 'Workflow failed',
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
@@ -1099,6 +1306,7 @@ app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
         error: error.message,
       }));
     }
+    await markPersistedSessionFailed(sessionId, error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1130,15 +1338,24 @@ app.post('/api/sessions/:sessionId/workflow-run-script', async (req, res) => {
       res.status(400).json({ error: `Invalid script: ${validation.error}` });
       return;
     }
+    const workflowTask = validation.meta?.name || 'custom_script';
+
+    await sessionStore.patchSession(sessionId, {
+      status: 'running',
+      mode: 'workflow',
+      task: workflowTask,
+      error: undefined,
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
         type: 'workflow_started',
-        task: validation.meta?.name || 'custom_script',
+        task: workflowTask,
       }));
     }
 
     workflow.onEvent((event: WorkflowEvent) => {
+      void sessionStore.patchSession(sessionId, { status: 'running' }).catch(() => {});
       if (session.ws && session.ws.readyState === WebSocket.OPEN) {
         session.ws.send(JSON.stringify({
           type: 'workflow_event',
@@ -1151,6 +1368,13 @@ app.post('/api/sessions/:sessionId/workflow-run-script', async (req, res) => {
 
     const result = await workflow.executeScript(script, args);
     session.workflowResult = result;
+    await sessionStore.patchSession(sessionId, {
+      status: result.success ? 'completed' : 'failed',
+      mode: 'workflow',
+      task: workflowTask,
+      workflowResult: toPersistedWorkflowResult(result),
+      error: result.success ? undefined : 'Workflow failed',
+    });
 
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify({
@@ -1179,39 +1403,58 @@ app.post('/api/sessions/:sessionId/workflow-run-script', async (req, res) => {
         error: error.message,
       }));
     }
+    await markPersistedSessionFailed(sessionId, error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/sessions/:sessionId/workflow-result', (req, res) => {
+app.get('/api/sessions/:sessionId/workflow-result', async (req, res) => {
+  await expireStaleRunningSessions();
   const { sessionId } = req.params;
   const session = sessions.get(sessionId);
-  if (!session) {
+  const persisted = sessionStore.getSession(sessionId);
+  if (!session && !persisted) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
 
-  if (!session.workflowResult) {
+  if (!session?.workflowResult && !persisted?.workflowResult) {
     res.json({ hasResult: false });
     return;
   }
 
-  const result = session.workflowResult;
+  const result = session?.workflowResult || persisted?.workflowResult;
   res.json({
     hasResult: true,
-    success: result.success,
-    output: result.output,
-    totalTokens: result.totalTokens,
-    totalExecutionTime: result.totalExecutionTime,
-    snapshot: result.snapshot,
+    success: result?.success,
+    output: result?.output,
+    totalTokens: result?.totalTokens,
+    totalExecutionTime: result?.totalExecutionTime,
+    snapshot: result?.snapshot,
+    session: persisted || null,
   });
 });
 
-server.listen(PORT, () => {
+async function startServer(): Promise<void> {
+  await sessionStore.load();
+  await Promise.all(
+    sessionStore
+      .listSessions()
+      .filter((session) => session.status === 'running')
+      .map((session) =>
+        sessionStore.patchSession(session.id, {
+          status: 'failed',
+          error: 'Server restarted before execution completed',
+        })
+      )
+  );
+  server.listen(PORT, () => {
   console.log(`\n🚀 Pi Multi-Agent Server running on http://localhost:${PORT}`);
   console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}/ws`);
   console.log(`\nAPI Endpoints:`);
+  console.log(`  GET    /api/sessions                        - List persisted sessions`);
   console.log(`  POST   /api/sessions                        - Create session`);
+  console.log(`  GET    /api/sessions/:id                    - Get persisted session`);
   console.log(`  POST   /api/sessions/:id/agents              - Create agent`);
   console.log(`  POST   /api/sessions/:id/agents/auto-generate - Auto-generate agents`);
   console.log(`  POST   /api/sessions/:id/deep-plan           - Deep plan with LLM`);
@@ -1225,4 +1468,10 @@ server.listen(PORT, () => {
   console.log(`  POST   /api/sessions/:id/workflow-run-script  - Dynamic workflow (custom script)`);
   console.log(`  GET    /api/sessions/:id/workflow-result      - Get workflow result`);
   console.log(``);
+  });
+}
+
+startServer().catch((error) => {
+  console.error('Failed to start Pi Multi-Agent Server:', error);
+  process.exit(1);
 });
