@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config';
 
 export interface DeepEvaluationDimension {
   name: string;
@@ -25,8 +26,11 @@ export interface DeepEvaluationResult {
 export class DeepEvaluator {
   private llmClient: OpenAI;
 
-  constructor(apiKey: string, baseURL: string = 'https://api.deepseek.com') {
+  private model: string;
+
+  constructor(apiKey: string, baseURL: string = LLM_DEFAULTS.baseURL, model: string = LLM_DEFAULTS.model) {
     this.llmClient = new OpenAI({ apiKey, baseURL });
+    this.model = model;
   }
 
   async evaluate(
@@ -132,7 +136,7 @@ ${outputPreview}
 
     try {
       const response = await this.llmClient.chat.completions.create({
-        model: 'deepseek-chat',
+        model: this.model,
         messages: [
           {
             role: 'system',

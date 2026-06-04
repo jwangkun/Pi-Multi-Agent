@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config';
 
 export interface SubTask {
   id: string;
@@ -36,8 +37,11 @@ let planIdCounter = 0;
 export class DeepPlanner {
   private llmClient: OpenAI;
 
-  constructor(apiKey: string, baseURL: string = 'https://api.deepseek.com') {
+  private model: string;
+
+  constructor(apiKey: string, baseURL: string = LLM_DEFAULTS.baseURL, model: string = LLM_DEFAULTS.model) {
     this.llmClient = new OpenAI({ apiKey, baseURL });
+    this.model = model;
   }
 
   async createDeepPlan(goal: string, options?: {
@@ -52,7 +56,7 @@ export class DeepPlanner {
     const planningPrompt = this.buildPlanningPrompt(goal, targetWordCount, maxAgents, depth);
 
     const response = await this.llmClient.chat.completions.create({
-      model: 'deepseek-chat',
+      model: this.model,
       messages: [
         {
           role: 'system',
@@ -198,7 +202,7 @@ ${failedTasks.map((t) => `- ${t.title}: ${t.description}`).join('\n')}
 请重新规划这些任务，提高输出质量。返回与之前相同格式的JSON。`;
 
     const response = await this.llmClient.chat.completions.create({
-      model: 'deepseek-chat',
+      model: this.model,
       messages: [
         {
           role: 'system',

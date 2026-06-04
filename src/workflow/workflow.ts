@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { WorkflowConfig, WorkflowResult, WorkflowEvent, WorkflowEventCallback, WorkflowMeta } from './types.js';
 import { TokenBudget } from './budget.js';
 import { runWorkflowScript, extractMeta, renderSnapshot } from './runtime.js';
+import { LLM_DEFAULTS } from '../core/llm-config.js';
 
 const WORKFLOW_SYSTEM_PROMPT = `You are a workflow script generator. Given a user's task description, you generate a JavaScript workflow script that orchestrates multiple sub-agents to complete the task.
 
@@ -76,8 +77,8 @@ export class DynamicWorkflow {
 
   constructor(config: WorkflowConfig) {
     this.apiKey = config.apiKey;
-    this.baseURL = config.baseURL || 'https://api.deepseek.com';
-    this.model = config.model || 'deepseek-chat';
+    this.baseURL = config.baseURL || LLM_DEFAULTS.baseURL;
+    this.model = config.model || LLM_DEFAULTS.model;
     this.defaultTokenBudget = config.tokenBudget || 200000;
     this.maxConcurrentAgents = config.maxConcurrentAgents || 5;
     this.llmClient = new OpenAI({ apiKey: config.apiKey, baseURL: this.baseURL });

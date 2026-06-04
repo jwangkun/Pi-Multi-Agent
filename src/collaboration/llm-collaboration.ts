@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config';
 
 export interface LLMAgent {
   id: string;
@@ -32,8 +33,11 @@ export interface LLMAgentCollaborationResult {
 export class LLMAgentCollaboration {
   private llmClient: OpenAI;
 
-  constructor(apiKey: string, baseURL: string = 'https://api.deepseek.com') {
+  private model: string;
+
+  constructor(apiKey: string, baseURL: string = LLM_DEFAULTS.baseURL, model: string = LLM_DEFAULTS.model) {
     this.llmClient = new OpenAI({ apiKey, baseURL });
+    this.model = model;
   }
 
   private async callAgent(agent: LLMAgent, input: string, maxTokens: number = 4096): Promise<LLMAgentResult> {
@@ -41,7 +45,7 @@ export class LLMAgentCollaboration {
 
     try {
       const response = await this.llmClient.chat.completions.create({
-        model: 'deepseek-chat',
+        model: this.model,
         messages: [
           { role: 'system', content: agent.systemPrompt },
           { role: 'user', content: input },

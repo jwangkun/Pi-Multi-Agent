@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -55,6 +55,7 @@ import {
   type PersistedSessionResult,
   type PersistedWorkflowResult,
 } from './session-store.js';
+import { updateLLMDefaults } from '../src/core/llm-config.js';
 
 const app = express();
 app.use(cors());
@@ -64,12 +65,64 @@ app.use(express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), '
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+let llmApiKey = process.env.LLM_API_KEY || process.env.DEEPSEEK_API_KEY || '';
+let llmBaseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
+let llmModel = process.env.LLM_MODEL || 'deepseek-chat';
 
-const deepseekClient = new OpenAI({
-  apiKey: DEEPSEEK_API_KEY,
-  baseURL: 'https://api.deepseek.com',
+export let llmClient = new OpenAI({
+  apiKey: llmApiKey,
+  baseURL: llmBaseUrl,
 });
+
+export function reloadLLMClient() {
+  llmClient = new OpenAI({ apiKey: llmApiKey, baseURL: llmBaseUrl });
+}
+
+export function getLLMConfig() {
+  return { apiKey: llmApiKey, baseURL: llmBaseUrl, model: llmModel };
+}
+
+export function updateLLMConfig(partial: { apiKey?: string; baseURL?: string; model?: string }) {
+  if (partial.apiKey !== undefined) llmApiKey = partial.apiKey;
+  if (partial.baseURL !== undefined) llmBaseUrl = partial.baseURL;
+  if (partial.model !== undefined) llmModel = partial.model;
+  reloadLLMClient();
+  updateLLMDefaults(llmBaseUrl, llmModel);
+}
+
+export function persistLLMConfigToEnv() {
+  // Use same resolution logic as startup — prefer existing .env, fallback to project root
+  let envPath = envPaths.find((p) => existsSync(p)) || envPaths[0];
+  let envContent = '';
+  if (existsSync(envPath)) {
+    envContent = readFileSync(envPath, 'utf-8');
+  }
+  const upsert = (key, value) => {
+    const line = key + '=' + value;
+    const regex = new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=.*$', 'm');
+    if (regex.test(envContent)) {
+      envContent = envContent.replace(regex, line);
+    } else {
+      envContent += '\n' + line;
+    }
+  };
+  upsert('LLM_API_KEY', llmApiKey);
+  upsert('LLM_BASE_URL', llmBaseUrl);
+  upsert('LLM_MODEL', llmModel);
+  writeFileSync(envPath, envContent.trim() + '\n', 'utf-8');
+}
+
+// ─── Preset Providers ───────────────────────────────────────────
+export const LLM_PRESETS = {
+  deepseek:      { name: 'DeepSeek',            baseURL: 'https://api.deepseek.com',            model: 'deepseek-chat' },
+  openai:        { name: 'OpenAI',               baseURL: 'https://api.openai.com/v1',            model: 'gpt-4o' },
+  stepfun:       { name: 'StepFun',              baseURL: 'https://api.stepfun.com/step_plan/v1', model: 'step-3.7-flash' },
+  glm:           { name: 'GLM Coding Plan',      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.1', note: 'Requires Coding Plan — not the regular API endpoint' },
+  siliconflow:   { name: 'SiliconFlow',          baseURL: 'https://api.siliconflow.cn/v1',       model: 'deepseek-ai/DeepSeek-V3' },
+  moonshot:      { name: 'Moonshot',             baseURL: 'https://api.moonshot.cn/v1',           model: 'moonshot-v1-8k' },
+} as const;
+
+export type PresetKey = keyof typeof LLM_PRESETS;
 
 interface ActiveSession {
   id: string;
@@ -184,8 +237,8 @@ function createDeepSeekExecutor(sessionId: string): AgentExecutor {
       }
 
       try {
-        const response = await deepseekClient.chat.completions.create({
-          model: 'deepseek-chat',
+        const response = await llmClient.chat.completions.create({
+          model: llmModel,
           messages: [
             {
               role: 'system',
@@ -338,8 +391,8 @@ app.post('/api/analyze-complexity', async (req, res) => {
   }
 
   try {
-    const response = await deepseekClient.chat.completions.create({
-      model: 'deepseek-chat',
+    const response = await llmClient.chat.completions.create({
+      model: llmModel,
       messages: [
         {
           role: 'system',
@@ -394,8 +447,8 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    const response = await deepseekClient.chat.completions.create({
-      model: 'deepseek-chat',
+    const response = await llmClient.chat.completions.create({
+      model: llmModel,
       messages: [
         { role: 'system', content: 'You are a helpful AI assistant. Respond concisely and accurately.' },
         { role: 'user', content: message },
@@ -422,8 +475,8 @@ app.post('/api/clarify', async (req, res) => {
   }
 
   try {
-    const response = await deepseekClient.chat.completions.create({
-      model: 'deepseek-chat',
+    const response = await llmClient.chat.completions.create({
+      model: llmModel,
       messages: [
         {
           role: 'system',
@@ -520,7 +573,7 @@ app.post('/api/sessions/:sessionId/agents', (req, res) => {
       name: tmpl.name,
       description: tmpl.description,
       systemPrompt: tmpl.systemPrompt,
-      model: { provider: 'deepseek', model: 'deepseek-chat' },
+      model: { provider: 'openai-compatible', model: llmModel },
     };
     capabilities = tmpl.capabilities;
   } else if (customName) {
@@ -528,7 +581,7 @@ app.post('/api/sessions/:sessionId/agents', (req, res) => {
       name: customName,
       description: customPrompt || `自定义Agent: ${customName}`,
       systemPrompt: customPrompt || `你是${customName}，一个专业的AI助手。`,
-      model: { provider: 'deepseek', model: 'deepseek-chat' },
+      model: { provider: 'openai-compatible', model: llmModel },
     };
     capabilities = customCapabilities || ['general'];
   } else {
@@ -566,8 +619,8 @@ app.post('/api/sessions/:sessionId/agents/auto-generate', async (req, res) => {
   }
 
   try {
-    const planningResponse = await deepseekClient.chat.completions.create({
-      model: 'deepseek-chat',
+    const planningResponse = await llmClient.chat.completions.create({
+      model: llmModel,
       messages: [
         {
           role: 'system',
@@ -615,7 +668,7 @@ app.post('/api/sessions/:sessionId/agents/auto-generate', async (req, res) => {
         name: agentDef.name,
         description: agentDef.role,
         systemPrompt: agentDef.systemPrompt,
-        model: { provider: 'deepseek', model: 'deepseek-chat' },
+        model: { provider: 'openai-compatible', model: llmModel },
       };
 
       const agent = new Agent(config, executor);
@@ -679,7 +732,7 @@ app.post('/api/sessions/:sessionId/deep-plan', async (req, res) => {
       }));
     }
 
-    const planner = new DeepPlanner(DEEPSEEK_API_KEY);
+    const planner = new DeepPlanner(llmApiKey, llmBaseUrl, llmModel);
     const plan = await planner.createDeepPlan(task, {
       targetWordCount: targetWordCount || 30000,
       maxAgents: maxAgents || 10,
@@ -785,7 +838,7 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
       }));
     }
 
-    const planner = new DeepPlanner(DEEPSEEK_API_KEY);
+    const planner = new DeepPlanner(llmApiKey, llmBaseUrl, llmModel);
     const plan = await planner.createDeepPlan(task, {
       targetWordCount: targetWordCount || 30000,
       maxAgents: maxAgents || 10,
@@ -821,7 +874,7 @@ app.post('/api/sessions/:sessionId/cluster-execute', async (req, res) => {
       }));
     }
 
-    const cluster = new AgentCluster(DEEPSEEK_API_KEY, sessionId);
+    const cluster = new AgentCluster(llmApiKey, sessionId, llmBaseUrl, llmModel);
     session.cluster = cluster;
 
     cluster.onEvent((event: ClusterEvent) => {
@@ -1137,7 +1190,7 @@ app.post('/api/sessions/:sessionId/collaborate', async (req, res) => {
       error: undefined,
     });
 
-    const collaboration = new LLMAgentCollaboration(DEEPSEEK_API_KEY);
+    const collaboration = new LLMAgentCollaboration(llmApiKey, llmBaseUrl, llmModel);
     const agents = (agentSpecs || []).map((a: any, i: number) => ({
       id: a.id || `agent_${i}`,
       name: a.name || `Agent ${i + 1}`,
@@ -1245,7 +1298,9 @@ app.post('/api/sessions/:sessionId/workflow-execute', async (req, res) => {
     });
 
     const workflow = new DynamicWorkflow({
-      apiKey: DEEPSEEK_API_KEY,
+      apiKey: llmApiKey,
+      baseURL: llmBaseUrl,
+      model: llmModel,
       tokenBudget: tokenBudget || 200000,
       maxConcurrentAgents: maxConcurrentAgents || 5,
     });
@@ -1327,7 +1382,9 @@ app.post('/api/sessions/:sessionId/workflow-run-script', async (req, res) => {
 
   try {
     const workflow = session.workflow || new DynamicWorkflow({
-      apiKey: DEEPSEEK_API_KEY,
+      apiKey: llmApiKey,
+      baseURL: llmBaseUrl,
+      model: llmModel,
       tokenBudget: 200000,
       maxConcurrentAgents: 5,
     });
@@ -1435,6 +1492,66 @@ app.get('/api/sessions/:sessionId/workflow-result', async (req, res) => {
   });
 });
 
+// ─── LLM Settings API ───────────────────────────────────────────
+app.get('/api/settings/llm', (_req, res) => {
+  const cfg = getLLMConfig();
+  let maskedKey = '';
+  if (cfg.apiKey) {
+    const k = cfg.apiKey;
+    maskedKey = k.length > 8 ? k.slice(0, 4) + '***' + k.slice(-4) : '***';
+  }
+  res.json({
+    hasApiKey: !!cfg.apiKey,
+    maskedApiKey: maskedKey,
+    baseURL: cfg.baseURL,
+    model: cfg.model,
+    presets: Object.fromEntries(
+      Object.entries(LLM_PRESETS).map(([k, v]) => [k, { name: v.name, baseURL: v.baseURL, model: v.model }])
+    ),
+  });
+});
+
+app.put('/api/settings/llm', async (req, res) => {
+  const { apiKey, baseURL, model } = req.body || {};
+  if (!baseURL || !model) {
+    res.status(400).json({ error: 'baseURL and model are required' });
+    return;
+  }
+  // Don't overwrite real key with placeholder
+  const filteredApiKey = (!apiKey || apiKey.includes('****')) ? undefined : apiKey;
+  updateLLMConfig({ apiKey: filteredApiKey, baseURL, model });
+  try {
+    persistLLMConfigToEnv();
+  } catch (e) {
+    console.error('Failed to persist .env:', e);
+  }
+  res.json({ success: true, config: { hasApiKey: !!llmApiKey, baseURL: llmBaseUrl, model: llmModel } });
+});
+
+app.post('/api/settings/llm/test', async (req, res) => {
+  const { apiKey, baseURL, model } = req.body || {};
+  const testKey = apiKey || llmApiKey;
+  const testBase = baseURL || llmBaseUrl;
+  const testModel = model || llmModel;
+  if (!testKey || !testBase || !testModel) {
+    res.status(400).json({ error: 'apiKey, baseURL, model are required' });
+    return;
+  }
+  try {
+    const testClient = new OpenAI({ apiKey: testKey, baseURL: testBase });
+    const start = Date.now();
+    await testClient.chat.completions.create({
+      model: testModel,
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 5,
+    });
+    const ms = Date.now() - start;
+    res.json({ success: true, latencyMs: ms });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message || String(e) });
+  }
+});
+
 async function startServer(): Promise<void> {
   await sessionStore.load();
   await Promise.all(
@@ -1448,7 +1565,7 @@ async function startServer(): Promise<void> {
         })
       )
   );
-  server.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`\n🚀 Pi Multi-Agent Server running on http://localhost:${PORT}`);
   console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}/ws`);
   console.log(`\nAPI Endpoints:`);

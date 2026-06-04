@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config.js';
 import { SessionId, TaskId, ToolDefinition, ToolExecutionContext } from '../core/index.js';
 import { DeepPlan, SubTask } from '../orchestration/deep-planner.js';
 import { DeepEvaluator, DeepEvaluationResult } from '../orchestration/deep-evaluator.js';
@@ -95,16 +96,18 @@ export class AgentCluster {
 
   private apiKey: string;
   private baseURL: string;
+  private model: string;
   private deepEvaluator: DeepEvaluator;
   private lastEvaluation: DeepEvaluationResult | null = null;
   public sharedMemory: EnhancedSharedMemory;
 
-  constructor(apiKey: string, sessionId: string, baseURL: string = 'https://api.deepseek.com') {
+  constructor(apiKey: string, sessionId: string, baseURL: string = LLM_DEFAULTS.baseURL, model: string = LLM_DEFAULTS.model) {
     this.llmClient = new OpenAI({ apiKey, baseURL });
     this.sessionId = sessionId;
     this.apiKey = apiKey;
     this.baseURL = baseURL;
-    this.deepEvaluator = new DeepEvaluator(apiKey, baseURL);
+    this.model = model;
+    this.deepEvaluator = new DeepEvaluator(apiKey, baseURL, model);
     this.sharedMemory = new EnhancedSharedMemory(sessionId as SessionId);
     this.initializeToolInstances();
   }
@@ -117,7 +120,7 @@ export class AgentCluster {
         } catch {}
       }
     }
-    this.toolInstances.set('agent_delegate', createAgentAsTool(this.apiKey, this.baseURL) as ToolDefinition<unknown, unknown>);
+    this.toolInstances.set('agent_delegate', createAgentAsTool(this.apiKey, this.baseURL, this.model) as ToolDefinition<unknown, unknown>);
   }
 
   onEvent(callback: EventCallback): void {
@@ -322,7 +325,7 @@ export class AgentCluster {
         this.emitEvent('agent_thinking', { round: 6 - maxToolRounds, messageCount: currentMessages.length }, task.id, task.assignedAgentName);
 
         const response = await this.llmClient.chat.completions.create({
-          model: 'deepseek-chat',
+          model: this.model,
           messages: currentMessages,
           tools: openaiTools,
           temperature: 0.7,
@@ -399,7 +402,7 @@ export class AgentCluster {
 
       if (!finalText) {
         const finalResponse = await this.llmClient.chat.completions.create({
-          model: 'deepseek-chat',
+          model: this.model,
           messages: [
             ...currentMessages,
             { role: 'user', content: '请基于以上所有工具调用结果和已有信息，完成你的任务。输出完整的、结构化的、专业的分析报告。' },
@@ -562,7 +565,7 @@ ${weakTasks.map((t) => `- ${t.title}: ${results.get(t.id)?.substring(0, 200) || 
 请返回JSON格式的改进建议，包含每个任务的改进方向和更详细的prompt。`;
 
         const response = await this.llmClient.chat.completions.create({
-          model: 'deepseek-chat',
+          model: this.model,
           messages: [
             { role: 'system', content: '你是任务规划优化专家。分析失败原因并给出改进建议。返回JSON格式。' },
             { role: 'user', content: replanPrompt },

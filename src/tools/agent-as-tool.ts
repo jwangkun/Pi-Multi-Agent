@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config.js';
 import { ToolDefinition, ToolExecutionContext } from '../core/types.js';
 
 export interface AgentAsToolInput {
@@ -22,8 +23,8 @@ export interface AgentAsToolOutput {
 
 export function createAgentAsTool(
   apiKey: string,
-  baseURL: string = 'https://api.deepseek.com',
-  model: string = 'deepseek-chat'
+  baseURL: string = LLM_DEFAULTS.baseURL,
+  model: string = LLM_DEFAULTS.model
 ): ToolDefinition<AgentAsToolInput, AgentAsToolOutput> {
   const llmClient = new OpenAI({ apiKey, baseURL });
 
@@ -148,8 +149,8 @@ export function createAgentAsTool(
 
 export function createAgentAsToolFactory(
   apiKey: string,
-  baseURL: string = 'https://api.deepseek.com',
-  model: string = 'deepseek-chat'
+  baseURL: string = LLM_DEFAULTS.baseURL,
+  model: string = LLM_DEFAULTS.model
 ): () => ToolDefinition<AgentAsToolInput, AgentAsToolOutput> {
   return () => createAgentAsTool(apiKey, baseURL, model);
 }

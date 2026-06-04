@@ -10,12 +10,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { resolveAutoExecution } from "@/lib/execution-mode";
 import { getRestoreMessage } from "@/lib/session-restore-message";
 import {
   Bot,
-  Send,
-  Sparkles,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -39,8 +38,17 @@ import {
   ArrowRight,
   RefreshCw,
   MessageCircle,
+  Send,
+  Sparkles,
+  Settings,
+  Sliders,
+  Globe,
+  Server,
+  CheckCircle,
+  XIcon,
+  Eye,
+  EyeOff,
 } from "lucide-react";
-import { resolveAutoExecution } from "@/lib/execution-mode";
 
 const API_BASE = "http://localhost:3001";
 const WS_HOST = "localhost:3001";
@@ -284,6 +292,21 @@ export default function MultiAgentUI() {
     weaknesses?: string[];
     suggestions?: string[];
   } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [maskedApiKey, setMaskedApiKey] = useState('');
+  const [serverBaseURL, setServerBaseURL] = useState('');
+
+  // Reload LLM config every time settings panel opens
+  useEffect(() => {
+    if (settingsOpen) loadLLMConfig();
+  }, [settingsOpen]);
+  const [llmConfig, setLlmConfig] = useState<{ apiKey: string; baseURL: string; model: string; hasApiKey?: boolean; customName?: string } | null>(null);
+  const [llmPresets, setLlmPresets] = useState<Record<string, { name: string; baseURL: string; model: string }>>({});
+  const [testResult, setTestResult] = useState<{ success: boolean; latencyMs?: number; error?: string; message?: string } | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [customMode, setCustomMode] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [editingApiKey, setEditingApiKey] = useState(false);
   const [executionPhase, setExecutionPhase] = useState<"idle" | "planning" | "executing" | "evaluating" | "completed" | "failed">("idle");
   const wsRef = useRef<WebSocket | null>(null);
   const handleWSMessageRef = useRef<(msg: any) => void>(() => {});
@@ -1023,7 +1046,91 @@ export default function MultiAgentUI() {
     if (lastSessionId) {
       restoreSession(lastSessionId);
     }
+    loadLLMConfig();
   }, [loadRecentSessions, restoreSession]);
+
+  const loadLLMConfig = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/llm`);
+      const data = await res.json();
+      const serverPresets = data.presets || {};
+      // Merge custom presets from localStorage
+      let customPresets: Record<string, { name: string; baseURL: string; model: string }> = {};
+      try {
+        const stored = localStorage.getItem('pi-multi-agent:custom-presets');
+        if (stored) customPresets = JSON.parse(stored);
+      } catch {}
+      const allPresets = { ...serverPresets, ...customPresets };
+      setLlmPresets(allPresets);
+      setLlmConfig({ apiKey: '', baseURL: data.baseURL, model: data.model, hasApiKey: data.hasApiKey });
+      setMaskedApiKey(data.maskedApiKey || '');
+      setServerBaseURL(data.baseURL);
+      setEditingApiKey(false);
+    } catch {}
+  };
+
+  const handleSaveSettings = async () => {
+    if (!llmConfig) return;
+    setTestResult(null);
+    const res = await fetch(`${API_BASE}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(llmConfig),
+    });
+    const data = await res.json();
+    if (data.success) {
+      // Persist custom preset if in custom mode
+      if (customMode && llmConfig?.customName && llmConfig?.baseURL && llmConfig?.model) {
+        try {
+          const stored = localStorage.getItem('pi-multi-agent:custom-presets');
+          const existing: Record<string, { name: string; baseURL: string; model: string }> = stored ? JSON.parse(stored) : {};
+          const key = 'custom_' + llmConfig.customName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+          existing[key] = {
+            name: llmConfig.customName,
+            baseURL: llmConfig.baseURL,
+            model: llmConfig.model,
+          };
+          localStorage.setItem('pi-multi-agent:custom-presets', JSON.stringify(existing));
+          setLlmPresets((prev) => ({ ...prev, [key]: existing[key] }));
+        } catch {}
+      }
+      setTestResult({ success: true, latencyMs: 0, message: 'Saved. Changes apply to new tasks only.' });
+      setTimeout(() => {
+        setSettingsOpen(false);
+        setTestResult(null);
+      }, 2000);
+    } else {
+      setTestResult({ success: false, error: data.error || "Save failed" });
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!llmConfig) return;
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/llm/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(llmConfig),
+      });
+      const data = await res.json();
+      setTestResult(data);
+    } catch (e) {
+      setTestResult({ success: false, error: String(e) });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const applyPreset = (key: string) => {
+    const preset = llmPresets[key];
+    if (preset && llmConfig) {
+      setLlmConfig({ ...llmConfig, apiKey: '', baseURL: preset.baseURL, model: preset.model, customName: '' });
+      setCustomMode(false);
+      setTestResult(null);
+    }
+  };
 
   const createSession = async (): Promise<string> => {
     const res = await fetch(`${API_BASE}/api/sessions`, { method: "POST" });
@@ -1986,11 +2093,189 @@ blockquote{border-left:4px solid #6366f1;padding-left:1em;margin:1em 0;color:#4b
               ))}
             </div>
             <Separator orientation="vertical" className="h-5" />
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSettingsOpen(true)} title="LLM Settings">
+              <Sliders className="h-3.5 w-3.5" />
+            </Button>
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => clearWorkspace(true)}>
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
           </div>
         </div>
+
+        {/* LLM Settings Sheet */}
+        {settingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="bg-card border rounded-lg shadow-xl w-full max-w-md mx-4">
+              <div className="flex items-center justify-between p-4 border-b">
+                <h2 className="text-base font-semibold flex items-center gap-2">
+                  <Sliders className="h-4 w-4" />
+                  LLM Provider Settings
+                </h2>
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSettingsOpen(false)}>
+                  <XIcon className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="p-4 space-y-4">
+                {/* Preset Dropdown */}
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Preset Provider</label>
+                  <Select
+                    value={customMode ? '__custom__' : (llmConfig?.baseURL || '')}
+                    onValueChange={(val) => {
+                      if (val === '__custom__') {
+                        setCustomMode(true);
+                        setLlmConfig(llmConfig ? { ...llmConfig, customName: '', baseURL: '', model: '' } : null);
+                      } else {
+                        setCustomMode(false);
+                        const presetKey = Object.entries(llmPresets).find(([, v]) => v.baseURL === val)?.[0];
+                        if (presetKey) {
+                          applyPreset(presetKey);
+                        }
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue placeholder="Select a provider..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(llmPresets).map(([key, preset]) => (
+                        <SelectItem key={key} value={preset.baseURL} className="text-sm">
+                          <div className="flex flex-col">
+                            <span>{preset.name}</span>
+                            {key === 'glm' && (
+                              <span className="text-[10px] text-amber-500">Coding Plan only</span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="__custom__" className="text-sm">
+                        <span className="text-muted-foreground">+ Custom</span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+
+                {/* Custom Name */}
+                {customMode && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Provider Name</label>
+                    <Input
+                      className="h-9 text-sm"
+                      value={llmConfig?.customName || ''}
+                      onChange={(e) => setLlmConfig(llmConfig ? { ...llmConfig, customName: e.target.value } : null)}
+                      placeholder="My Provider"
+                    />
+                  </div>
+                )}
+
+                {/* Base URL */}
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Base URL</label>
+                  <div className="relative">
+                    <Globe className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                    <Input
+                      className="h-9 pl-8 text-sm"
+                      value={llmConfig?.baseURL || ''}
+                      onChange={(e) => setLlmConfig(llmConfig ? { ...llmConfig, baseURL: e.target.value } : null)}
+                      placeholder="https://api.deepseek.com"
+                    />
+                  </div>
+                </div>
+
+                {/* Model */}
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Model</label>
+                  <Input
+                    className="h-9 text-sm"
+                    value={llmConfig?.model || ''}
+                    onChange={(e) => setLlmConfig(llmConfig ? { ...llmConfig, model: e.target.value } : null)}
+                    placeholder="deepseek-chat"
+                  />
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">API Key</label>
+                  <div className="relative">
+                    <Input
+                      className="h-9 text-sm font-mono pr-9"
+                      type={showApiKey ? 'text' : 'password'}
+                      value={editingApiKey || llmConfig?.apiKey ? (llmConfig?.apiKey || '') : (llmConfig?.hasApiKey && llmConfig?.baseURL === serverBaseURL ? maskedApiKey : '')}
+                      onChange={(e) => setLlmConfig(llmConfig ? { ...llmConfig, apiKey: e.target.value } : null)}
+                      onFocus={() => setEditingApiKey(true)}
+                      onBlur={() => { if (!llmConfig?.apiKey) setEditingApiKey(false); }}
+                      placeholder="sk-..."
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 absolute right-1 top-1 text-muted-foreground"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                    >
+                      {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Test Result */}
+                {testResult && (
+                  <div className={`flex items-center gap-2 text-xs p-2.5 rounded-md ${testResult.success ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400'}`}>
+                    {testResult.success ? <CheckCircle className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+                    <span>
+                      {testResult.success
+                        ? (testResult.message || `Connected (${testResult.latencyMs}ms)`)
+                        : testResult.error}
+                    </span>
+                  </div>
+                )}
+
+                {/* Actions */}
+                {(() => {
+                  const activeKey = llmConfig?.baseURL ? Object.entries(llmPresets).find(([, v]) => v.baseURL === llmConfig.baseURL)?.[0] : null;
+                  const canDelete = !!activeKey;
+                  return (
+                    <div className="flex items-center gap-2 pt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={handleTestConnection}
+                        disabled={testingConnection || (!llmConfig?.apiKey && !llmConfig?.hasApiKey)}
+                      >
+                        {testingConnection ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Server className="h-3.5 w-3.5 mr-1.5" />}
+                        Test Connection
+                      </Button>
+                      <Button size="sm" className="flex-1" onClick={handleSaveSettings} disabled={!llmConfig}>
+                        <CheckCircle className="h-3.5 w-3.5 mr-1.5" />
+                        Save
+                      </Button>
+                      {canDelete && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => {
+                            const isCustom = activeKey!.startsWith('custom_');
+                            const updated = { ...llmPresets };
+                            delete updated[activeKey!];
+                            if (isCustom) localStorage.setItem('pi-multi-agent:custom-presets', JSON.stringify(updated));
+                            setLlmPresets(updated);
+                            setCustomMode(false);
+                            setLlmConfig(llmConfig ? { ...llmConfig, customName: '', baseURL: '', model: '' } : null);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 mr-1" />
+                          Delete
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Messages - scrollable area */}
         <div className="flex-1 overflow-y-auto" id="chat-scroll-container">

@@ -4,6 +4,7 @@ import { TokenBudget } from './budget.js';
 import { parseStructuredOutput } from './structured-output.js';
 import type { JSONSchema } from './structured-output.js';
 import OpenAI from 'openai';
+import { LLM_DEFAULTS } from '../core/llm-config.js';
 
 const FORBIDDEN_GLOBALS = ['Date', 'Math', 'require', 'import', 'process', 'global', 'Buffer', 'setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate', 'fetch', 'XMLHttpRequest', 'WebSocket', '__dirname', '__filename'];
 
@@ -83,9 +84,9 @@ export async function runWorkflowScript(
 
   const llmClient = new OpenAI({
     apiKey: deps.apiKey,
-    baseURL: deps.baseURL || 'https://api.deepseek.com',
+    baseURL: deps.baseURL || LLM_DEFAULTS.baseURL,
   });
-  const model = deps.model || 'deepseek-chat';
+  const model = deps.model || LLM_DEFAULTS.model;
   const maxConcurrent = deps.maxConcurrentAgents || 5;
 
   const emit = (event: WorkflowEvent) => {
