@@ -77,7 +77,7 @@ export class DeepPlanner {
       max_tokens: 4096,
     });
 
-    const planText = response.choices[0]?.message?.content || '';
+    const planText = this.getMessageText(response);
     const jsonMatch = planText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error(`Failed to parse deep plan: ${planText.substring(0, 200)}`);
@@ -85,6 +85,19 @@ export class DeepPlanner {
 
     const rawPlan = JSON.parse(jsonMatch[0]);
     return this.normalizePlan(rawPlan, goal);
+  }
+
+  private getMessageText(response: any): string {
+    const message = response?.choices?.[0]?.message;
+    const content = message?.content;
+    if (typeof content === 'string' && content.trim().length > 0) {
+      return content;
+    }
+    const reasoning = (message as any)?.reasoning;
+    if (typeof reasoning === 'string' && reasoning.trim().length > 0) {
+      return reasoning;
+    }
+    return '';
   }
 
   private buildPlanningPrompt(goal: string, targetWordCount: number, maxAgents: number, depth: number): string {
@@ -214,7 +227,7 @@ ${failedTasks.map((t) => `- ${t.title}: ${t.description}`).join('\n')}
       max_tokens: 4096,
     });
 
-    const planText = response.choices[0]?.message?.content || '';
+    const planText = this.getMessageText(response);
     const jsonMatch = planText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return originalPlan;
