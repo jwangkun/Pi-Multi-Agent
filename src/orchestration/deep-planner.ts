@@ -69,7 +69,7 @@ export class DeepPlanner {
 4. 输出要求必须量化（字数、章节数、数据点数等）
 5. 质量标准必须可衡量
 
-你必须返回严格的JSON格式，不要有任何其他文字。`,
+【重要】你必须且只能返回一个合法的JSON对象，禁止输出任何思考过程、解释或非JSON文字。直接以 { 开头，以 } 结尾。`,
         },
         { role: 'user', content: planningPrompt },
       ],
@@ -219,7 +219,7 @@ ${failedTasks.map((t) => `- ${t.title}: ${t.description}`).join('\n')}
       messages: [
         {
           role: 'system',
-          content: '你是任务重新规划专家。根据评估反馈调整任务计划，提高输出质量。只返回JSON。',
+          content: '你是任务重新规划专家。根据评估反馈调整任务计划，提高输出质量。【重要】你必须且只能返回一个合法的JSON对象，禁止输出任何思考过程、解释或非JSON文字。直接以 { 开头，以 } 结尾。',
         },
         { role: 'user', content: replanPrompt },
       ],
